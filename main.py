@@ -1,10 +1,13 @@
 from UGATIT import UGATIT
 import argparse
 from utils import *
+import wandb
+import socket
 
 """parsing and configuration"""
 
 autodlpath = '/tmp/pycharm_project_837/'
+
 
 def parse_args():
     desc = "Pytorch implementation of U-GAT-IT"
@@ -59,6 +62,7 @@ def parse_args():
 
     return check_args(parser.parse_args())
 
+
 """checking arguments"""
 def check_args(args):
     # --result_dir
@@ -100,6 +104,7 @@ def check_args(args):
 """main"""
 def main():
     torch.cuda.empty_cache()
+
     # parse arguments
     args = parse_args()
     if args is None:

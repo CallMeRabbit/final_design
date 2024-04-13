@@ -7,6 +7,8 @@ from utils import *
 from glob import glob
 import add
 import patchnce
+import wandb
+
 
 class UGATIT(object) :
     def __init__(self, args):
@@ -219,6 +221,17 @@ class UGATIT(object) :
     ##########################################################################################
 
     def train(self):
+        wandb.init(
+            project='UGATIT',
+            name='name',
+            resume='None',
+            config = {
+                "learning_rate": 0.0001,
+                "architecture": "UGATIT",
+                "dataset": "IRAY",
+                "epochs": 100000,
+                     }
+                   )
         self.genA2B.train(), self.genB2A.train(), self.disGA.train(), self.disGB.train(), self.disLA.train(), self.disLB.train()
 
         start_iter = 1
@@ -336,10 +349,10 @@ class UGATIT(object) :
             G_nce_loss_B = self.calculate_NCE_loss(real_B, fake_B2A, G_dir = 'B2A')
             ##############################################################################
 
-            G_loss_A = self.adv_weight * (G_ad_loss_GA + G_ad_cam_loss_GA + G_ad_loss_LA + G_ad_cam_loss_LA) + self.cycle_weight * G_recon_loss_A + self.identity_weight * G_identity_loss_A + self.cam_weight * G_cam_loss_A
-            G_loss_B = self.adv_weight * (G_ad_loss_GB + G_ad_cam_loss_GB + G_ad_loss_LB + G_ad_cam_loss_LB) + self.cycle_weight * G_recon_loss_B + self.identity_weight * G_identity_loss_B + self.cam_weight * G_cam_loss_B
-            # G_loss_A = self.adv_weight * (G_ad_loss_GA + G_ad_cam_loss_GA + G_ad_loss_LA + G_ad_cam_loss_LA) + self.cycle_weight * G_recon_loss_A + self.identity_weight * G_identity_loss_A + self.cam_weight * G_cam_loss_A + self.lambda_NCE * G_nce_loss_A
-            # G_loss_B = self.adv_weight * (G_ad_loss_GB + G_ad_cam_loss_GB + G_ad_loss_LB + G_ad_cam_loss_LB) + self.cycle_weight * G_recon_loss_B + self.identity_weight * G_identity_loss_B + self.cam_weight * G_cam_loss_B + self.lambda_NCE * G_nce_loss_B
+            # G_loss_A = self.adv_weight * (G_ad_loss_GA + G_ad_cam_loss_GA + G_ad_loss_LA + G_ad_cam_loss_LA) + self.cycle_weight * G_recon_loss_A + self.identity_weight * G_identity_loss_A + self.cam_weight * G_cam_loss_A
+            # G_loss_B = self.adv_weight * (G_ad_loss_GB + G_ad_cam_loss_GB + G_ad_loss_LB + G_ad_cam_loss_LB) + self.cycle_weight * G_recon_loss_B + self.identity_weight * G_identity_loss_B + self.cam_weight * G_cam_loss_B
+            G_loss_A = self.adv_weight * (G_ad_loss_GA + G_ad_cam_loss_GA + G_ad_loss_LA + G_ad_cam_loss_LA) + self.cycle_weight * G_recon_loss_A + self.identity_weight * G_identity_loss_A + self.cam_weight * G_cam_loss_A + self.lambda_NCE * G_nce_loss_A
+            G_loss_B = self.adv_weight * (G_ad_loss_GB + G_ad_cam_loss_GB + G_ad_loss_LB + G_ad_cam_loss_LB) + self.cycle_weight * G_recon_loss_B + self.identity_weight * G_identity_loss_B + self.cam_weight * G_cam_loss_B + self.lambda_NCE * G_nce_loss_B
 
             Generator_loss = G_loss_A + G_loss_B
             Generator_loss.backward()
@@ -359,6 +372,12 @@ class UGATIT(object) :
             with open('tamp_record.txt', mode) as f:
                 f.write("[%5d/%5d] time: %4.4f d_loss: %.8f, g_loss: %.8f\n" % (step, self.iteration, time.time() - start_time, Discriminator_loss, Generator_loss))
                 f.close()
+
+            wandb.log({'G_loss': Generator_loss, 'ad_loss': G_ad_loss_GA + G_ad_cam_loss_GA + G_ad_loss_LA + G_ad_cam_loss_LA,
+                       'cycle_loss': G_recon_loss_A, 'identity_loss': G_identity_loss_A, 'cam_loss': G_cam_loss_A,
+                       'nce_loss': G_nce_loss_A,'epoch': self.iteration, 'learning rate': self.lr,
+            'images': wandb.Image(fake_A2B.float())})
+
             if step % self.print_freq == 0:
                 train_sample_num = 5
                 test_sample_num = 5
@@ -460,6 +479,7 @@ class UGATIT(object) :
                 params['disLA'] = self.disLA.state_dict()
                 params['disLB'] = self.disLB.state_dict()
                 torch.save(params, os.path.join(self.result_dir, self.dataset + '_params_latest.pt'))
+
 
     def save(self, dir, step):
         params = {}
