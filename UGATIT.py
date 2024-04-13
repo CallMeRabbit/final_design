@@ -5,16 +5,20 @@ from torch.utils.data import DataLoader
 from networks import *
 from utils import *
 from glob import glob
+import add
+import patchnce
 
 class UGATIT(object) :
     def __init__(self, args):
         self.light = args.light
+        self.args = args
 
         if self.light :
             self.model_name = 'UGATIT_light'
         else :
             self.model_name = 'UGATIT'
 
+        self.phase = args.phase
         self.result_dir = args.result_dir
         self.dataset = args.dataset
 
@@ -48,6 +52,28 @@ class UGATIT(object) :
         self.benchmark_flag = args.benchmark_flag
         self.resume = args.resume
 
+        ###############################################################################################################
+        #增加部分
+        ###############################################################################################################
+
+        self.lambda_GAN = args.lambda_GAN
+        self.lambda_NCE = args.lambda_NCE
+        self.nce_idt = args.nce_idt
+        self.nce_layers = [int(i) for i in args.nce_layers.split(',')]
+        self.nce_includes_all_negatives_from_minibatch = args.nce_includes_all_negatives_from_minibatch
+        self.netF_nc = args.netF_nc
+        self.netF = init_net((PatchSampleF(use_mlp=True, init_type='normal', init_gain=0.02, gpu_ids=[0], nc=args.netF_nc)), init_type='normal', init_gain=0.02, gpu_ids=[0]).to('cuda')
+        self.nce_T = args.nce_T
+        self.flip_equivariance = args.flip_equivariance
+        self.num_patches = args.num_patches
+        self.criterionNCE = []
+
+        ###############################################################################################################
+        #结束
+        ###############################################################################################################
+
+
+
         if torch.backends.cudnn.enabled and self.benchmark_flag:
             print('set benchmark !')
             torch.backends.cudnn.benchmark = True
@@ -77,6 +103,33 @@ class UGATIT(object) :
         print("# cycle_weight : ", self.cycle_weight)
         print("# identity_weight : ", self.identity_weight)
         print("# cam_weight : ", self.cam_weight)
+        ###############################################################################################################
+        #增加部分
+        ###############################################################################################################
+        print()
+
+        print("##### comparison #####")
+        print("# lambda_NCE : ", self.lambda_NCE)
+        print("# lambda_GAN : ", self.lambda_GAN)
+
+        if os.path.exists('tamp_record.txt'):
+            # 如果文件已经存在，则以追加模式打开
+            mode = 'a'
+        else:
+            # 如果文件不存在，则创建文件并打开
+            mode = 'w'
+        with open('tamp_record.txt', mode) as f:
+            f.write("##### Information #####")
+            f.write("# lambda_GAN : [%5d]\n" % (self.lambda_NCE))
+            f.write("# lambda_GAN : [%5d]\n" % (self.lambda_GAN))
+            f.write("\n")
+
+
+
+            f.close()
+        ###############################################################################################################
+        #结束
+        ###############################################################################################################
 
     ##################################################################################
     # Model
@@ -119,12 +172,51 @@ class UGATIT(object) :
         self.MSE_loss = nn.MSELoss().to(self.device)
         self.BCE_loss = nn.BCEWithLogitsLoss().to(self.device)
 
+        ##############################
+        for nce_layer in self.nce_layers:
+            self.criterionNCE.append(patchnce.PatchNCELoss(self.args).to(self.device))
+        ##############################
+
         """ Trainer """
         self.G_optim = torch.optim.Adam(itertools.chain(self.genA2B.parameters(), self.genB2A.parameters()), lr=self.lr, betas=(0.5, 0.999), weight_decay=self.weight_decay)
         self.D_optim = torch.optim.Adam(itertools.chain(self.disGA.parameters(), self.disGB.parameters(), self.disLA.parameters(), self.disLB.parameters()), lr=self.lr, betas=(0.5, 0.999), weight_decay=self.weight_decay)
 
         """ Define Rho clipper to constraint the value of rho in AdaILN and ILN"""
         self.Rho_clipper = RhoClipper(0, 1)
+
+################################################################################
+    def calculate_NCE_loss(self, src, tgt , G_dir=''):
+        n_layers = len(self.nce_layers)
+
+        # feat_q = init_net(tgt, (ResnetGenerator(input_nc=3, output_nc=3, encode_only=True)), gpu_ids=[0])
+        if G_dir == 'A2B':
+            feat_q = self.genA2B(tgt, self.nce_layers, encode_only=True)
+        else:
+            feat_q = self.genB2A(tgt, self.nce_layers, encode_only=True)
+        # if self.phase == 'train':
+        #     isTrain = True
+        # else:
+        #     isTrain = False
+        # if self.flip_equivariance:
+        #     self.flipped_for_equivariance = isTrain and (np.random.random() < 0.5)
+        # if self.flip_equivariance and self.flipped_for_equivariance:
+        #     feat_q = [torch.flip(fq, [3]) for fq in feat_q]
+
+        # feat_k = ResnetGenerator(src, self.nce_layers, encode_only=True)
+        if G_dir == 'A2B':
+            feat_k = self.genA2B(src, self.nce_layers, encode_only=True)
+        else:
+            feat_k = self.genB2A(src, self.nce_layers, encode_only=True)
+        feat_k_pool, sample_ids = self.netF(feat_k, self.num_patches, None)
+        feat_q_pool, _ = self.netF(feat_q, self.num_patches, sample_ids)
+
+        total_nce_loss = 0.0
+        for f_q, f_k, crit, nce_layer in zip(feat_q_pool, feat_k_pool, self.criterionNCE, self.nce_layers):
+            loss = crit(f_q, f_k) * 1.0
+            total_nce_loss += loss.mean()
+
+        return total_nce_loss / n_layers
+    ##########################################################################################
 
     def train(self):
         self.genA2B.train(), self.genB2A.train(), self.disGA.train(), self.disGB.train(), self.disLA.train(), self.disLB.train()
@@ -143,6 +235,15 @@ class UGATIT(object) :
 
         # training loop
         print('training start !')
+        if os.path.exists('tamp_record.txt'):
+            # 如果文件已经存在，则以追加模式打开
+            mode = 'a'
+        else:
+            # 如果文件不存在，则创建文件并打开
+            mode = 'w'
+        with open('tamp_record.txt', mode) as f:
+            f.write('training start !\n')
+            f.close()
         start_time = time.time()
         for step in range(start_iter, self.iteration + 1):
             if self.decay_flag and step > (self.iteration // 2):
@@ -230,8 +331,15 @@ class UGATIT(object) :
             G_cam_loss_A = self.BCE_loss(fake_B2A_cam_logit, torch.ones_like(fake_B2A_cam_logit).to(self.device)) + self.BCE_loss(fake_A2A_cam_logit, torch.zeros_like(fake_A2A_cam_logit).to(self.device))
             G_cam_loss_B = self.BCE_loss(fake_A2B_cam_logit, torch.ones_like(fake_A2B_cam_logit).to(self.device)) + self.BCE_loss(fake_B2B_cam_logit, torch.zeros_like(fake_B2B_cam_logit).to(self.device))
 
-            G_loss_A =  self.adv_weight * (G_ad_loss_GA + G_ad_cam_loss_GA + G_ad_loss_LA + G_ad_cam_loss_LA) + self.cycle_weight * G_recon_loss_A + self.identity_weight * G_identity_loss_A + self.cam_weight * G_cam_loss_A
+            #############################################################################
+            G_nce_loss_A = self.calculate_NCE_loss(real_A, fake_A2B, G_dir = 'A2B')
+            G_nce_loss_B = self.calculate_NCE_loss(real_B, fake_B2A, G_dir = 'B2A')
+            ##############################################################################
+
+            G_loss_A = self.adv_weight * (G_ad_loss_GA + G_ad_cam_loss_GA + G_ad_loss_LA + G_ad_cam_loss_LA) + self.cycle_weight * G_recon_loss_A + self.identity_weight * G_identity_loss_A + self.cam_weight * G_cam_loss_A
             G_loss_B = self.adv_weight * (G_ad_loss_GB + G_ad_cam_loss_GB + G_ad_loss_LB + G_ad_cam_loss_LB) + self.cycle_weight * G_recon_loss_B + self.identity_weight * G_identity_loss_B + self.cam_weight * G_cam_loss_B
+            # G_loss_A = self.adv_weight * (G_ad_loss_GA + G_ad_cam_loss_GA + G_ad_loss_LA + G_ad_cam_loss_LA) + self.cycle_weight * G_recon_loss_A + self.identity_weight * G_identity_loss_A + self.cam_weight * G_cam_loss_A + self.lambda_NCE * G_nce_loss_A
+            # G_loss_B = self.adv_weight * (G_ad_loss_GB + G_ad_cam_loss_GB + G_ad_loss_LB + G_ad_cam_loss_LB) + self.cycle_weight * G_recon_loss_B + self.identity_weight * G_identity_loss_B + self.cam_weight * G_cam_loss_B + self.lambda_NCE * G_nce_loss_B
 
             Generator_loss = G_loss_A + G_loss_B
             Generator_loss.backward()
@@ -242,6 +350,15 @@ class UGATIT(object) :
             self.genB2A.apply(self.Rho_clipper)
 
             print("[%5d/%5d] time: %4.4f d_loss: %.8f, g_loss: %.8f" % (step, self.iteration, time.time() - start_time, Discriminator_loss, Generator_loss))
+            if os.path.exists('tamp_record.txt'):
+                # 如果文件已经存在，则以追加模式打开
+                mode = 'a'
+            else:
+                # 如果文件不存在，则创建文件并打开
+                mode = 'w'
+            with open('tamp_record.txt', mode) as f:
+                f.write("[%5d/%5d] time: %4.4f d_loss: %.8f, g_loss: %.8f\n" % (step, self.iteration, time.time() - start_time, Discriminator_loss, Generator_loss))
+                f.close()
             if step % self.print_freq == 0:
                 train_sample_num = 5
                 test_sample_num = 5
