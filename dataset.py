@@ -5,6 +5,7 @@ from PIL import Image
 import os
 import os.path
 
+autodlpath = '/tmp/pycharm_project_837/'
 
 def has_file_allowed_extension(filename, extensions):
     """Checks if a file is an allowed extension.
@@ -41,6 +42,7 @@ def make_dataset(dir, extensions):
 class DatasetFolder(data.Dataset):
     def __init__(self, root, loader, extensions, transform=None, target_transform=None):
         # classes, class_to_idx = find_classes(root)
+        root = autodlpath+root
         samples = make_dataset(root, extensions)
         if len(samples) == 0:
             raise(RuntimeError("Found 0 files in subfolders of: " + root + "\n"
